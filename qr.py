@@ -1,11 +1,13 @@
 import re
 import tkinter as tk
-from io import BytesIO
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
+PLACEHOLDER = "Text oder URL eingeben …\n\nMehrere QR-Codes: Blöcke mit einer Leerzeile trennen."
+
 import qrcode
 from PIL import Image, ImageDraw, ImageFont, ImageTk
+
 
 
 # ---------------------------------------------------------------------------
@@ -22,7 +24,12 @@ def erzeuge_qr(text: str) -> Image.Image:
     qr.make(fit=True)
     qr_img = qr.make_image(fill_color="black", back_color="white").convert("RGB")
 
-    # Footer-Text unterhalb des QR-Codes zeichnen
+    # Footer-Text unterhalb des QR-Codes zeichnen (bei Mehrzeilen nur kurze Vorschau)
+    footer_text = text.replace("\r\n", "\n").replace("\r", "\n").strip()
+    if "\n" in footer_text:
+        erste_zeile = footer_text.splitlines()[0].strip()
+        footer_text = f"{erste_zeile} ..."
+
     schriftgroesse = max(16, qr_img.width // 20)
     try:
         font = ImageFont.truetype("arial.ttf", schriftgroesse)
@@ -31,7 +38,7 @@ def erzeuge_qr(text: str) -> Image.Image:
 
     # Textgröße messen
     dummy = ImageDraw.Draw(qr_img)
-    bbox = dummy.textbbox((0, 0), text, font=font)
+    bbox = dummy.textbbox((0, 0), footer_text, font=font)
     text_w = bbox[2] - bbox[0]
     text_h = bbox[3] - bbox[1]
 
@@ -45,7 +52,7 @@ def erzeuge_qr(text: str) -> Image.Image:
     draw = ImageDraw.Draw(gesamt)
     x = (gesamt.width - text_w) // 2
     y = qr_img.height + padding
-    draw.text((x, y), text, fill="black", font=font)
+    draw.text((x, y), footer_text, fill="black", font=font)
 
     return gesamt
 
@@ -63,7 +70,8 @@ def sicherer_dateiname(text: str) -> str:
 # ---------------------------------------------------------------------------
 def zeige_vorschau(parent: tk.Tk, text: str, img: Image.Image):
     popup = tk.Toplevel(parent)
-    popup.title(f"QR-Vorschau – {text[:40]}")
+    titel = text.replace("\n", " ")[:40]
+    popup.title(f"QR-Vorschau - {titel}")
     popup.resizable(False, False)
 
     vorschau = img.copy()
@@ -85,39 +93,116 @@ class QRApp(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("QR-Code Generator")
-        self.minsize(520, 460)
+        self.minsize(560, 500)
         self._build_ui()
 
     # --- UI aufbauen ---
     def _build_ui(self):
-        # Eingabebereich
-        frm_input = ttk.LabelFrame(self, text="Eingaben (eine Zeile = ein QR-Code)")
-        frm_input.pack(fill="both", expand=True, padx=10, pady=(10, 5))
+        # Tabs
+        self._nb = ttk.Notebook(self)
+        self._nb.pack(fill="both", expand=True, padx=10, pady=(10, 0))
 
-        self.txt_input = tk.Text(frm_input, height=12, wrap="word")
-        self.txt_input.pack(fill="both", expand=True, padx=5, pady=5)
+        self._tab_text = ttk.Frame(self._nb)
+        self._nb.add(self._tab_text, text="  Text / URL  ")
+        self._build_text_tab()
+
+        self._tab_vcard = ttk.Frame(self._nb)
+        self._nb.add(self._tab_vcard, text="  Visitenkarte  ")
+        self._build_vcard_tab()
+
+        self._nb.bind("<<NotebookTabChanged>>", self._on_tab_changed)
 
         # Speicherort
         frm_path = ttk.Frame(self)
-        frm_path.pack(fill="x", padx=10, pady=5)
-
+        frm_path.pack(fill="x", padx=10, pady=(8, 0))
         ttk.Label(frm_path, text="Speicherort:").pack(side="left")
         self.var_pfad = tk.StringVar(value=str(Path.home() / "Desktop"))
-        ent_pfad = ttk.Entry(frm_path, textvariable=self.var_pfad)
-        ent_pfad.pack(side="left", fill="x", expand=True, padx=(5, 5))
+        ttk.Entry(frm_path, textvariable=self.var_pfad).pack(side="left", fill="x", expand=True, padx=(5, 5))
         ttk.Button(frm_path, text="…", width=3, command=self._waehle_ordner).pack(side="left")
 
         # Aktionen
         frm_actions = ttk.Frame(self)
-        frm_actions.pack(fill="x", padx=10, pady=(5, 10))
-
-        ttk.Button(frm_actions, text="💾  Alle speichern", command=self._alle_speichern).pack(side="left", padx=(0, 5))
-        ttk.Button(frm_actions, text="👁  Vorschau anzeigen", command=self._alle_vorschau).pack(side="left", padx=5)
-        ttk.Button(frm_actions, text="💾+👁  Speichern & Vorschau", command=self._speichern_und_vorschau).pack(side="left", padx=5)
+        frm_actions.pack(fill="x", padx=10, pady=(6, 0))
+        ttk.Button(frm_actions, text="👁  Vorschau", command=self._vorschau).pack(side="left", padx=(0, 5))
+        ttk.Button(frm_actions, text="💾  Speichern", command=self._speichern).pack(side="left")
 
         # Status
         self.var_status = tk.StringVar(value="Bereit.")
-        ttk.Label(self, textvariable=self.var_status, relief="sunken", anchor="w").pack(fill="x", padx=10, pady=(0, 10))
+        ttk.Label(self, textvariable=self.var_status, relief="sunken", anchor="w").pack(
+            fill="x", padx=10, pady=(6, 10)
+        )
+
+    # --- Tab 1: Text / URL ---
+    def _build_text_tab(self):
+        self._placeholder_active = True
+        self.txt_input = tk.Text(self._tab_text, height=10, wrap="word", fg="grey")
+        self.txt_input.insert("1.0", PLACEHOLDER)
+        self.txt_input.pack(fill="both", expand=True, padx=5, pady=(5, 0))
+        self.txt_input.bind("<FocusIn>", self._placeholder_clear)
+        self.txt_input.bind("<FocusOut>", self._placeholder_restore)
+        self.txt_input.bind("<KeyRelease>", self._aktualisiere_zaehler)
+
+        frm_hint = ttk.Frame(self._tab_text)
+        frm_hint.pack(fill="x", padx=5, pady=(3, 5))
+        ttk.Button(frm_hint, text="+ Block hinzufügen", command=self._block_hinzufuegen).pack(side="left")
+        self.lbl_zaehler = ttk.Label(frm_hint, text="")
+        self.lbl_zaehler.pack(side="right")
+
+    # --- Tab 2: Visitenkarte ---
+    def _build_vcard_tab(self):
+        felder = [
+            ("Vorname",  "var_vname"),
+            ("Nachname", "var_nname"),
+            ("Firma",    "var_org"),
+            ("Funktion", "var_titel"),
+            ("Telefon",  "var_tel"),
+            ("E-Mail",   "var_email"),
+            ("Website",  "var_url"),
+        ]
+        frm = ttk.Frame(self._tab_vcard)
+        frm.pack(fill="both", expand=True, padx=15, pady=12)
+        for i, (label, attr) in enumerate(felder):
+            ttk.Label(frm, text=label + ":").grid(row=i, column=0, sticky="e", padx=(0, 8), pady=5)
+            var = tk.StringVar()
+            setattr(self, attr, var)
+            ttk.Entry(frm, textvariable=var, width=36).grid(row=i, column=1, sticky="ew", pady=5)
+        frm.columnconfigure(1, weight=1)
+
+    # --- Placeholder-Logik ---
+    def _placeholder_clear(self, _event=None):
+        if self._placeholder_active:
+            self.txt_input.delete("1.0", "end")
+            self.txt_input.config(fg="black")
+            self._placeholder_active = False
+            self._aktualisiere_zaehler()
+
+    def _placeholder_restore(self, _event=None):
+        if not self.txt_input.get("1.0", "end").strip():
+            self.txt_input.config(fg="grey")
+            self.txt_input.insert("1.0", PLACEHOLDER)
+            self._placeholder_active = True
+            self.lbl_zaehler.config(text="")
+
+    # --- Live-Zähler ---
+    def _aktualisiere_zaehler(self, _event=None):
+        if self._placeholder_active:
+            return
+        n = len(self._eintraege_text(warn=False))
+        self.lbl_zaehler.config(text=f"{n} QR-Code{'s' if n != 1 else ''}" if n else "")
+        self.var_status.set(f"{n} QR-Code{'s' if n != 1 else ''} erkannt." if n else "Bereit.")
+
+    def _on_tab_changed(self, _event=None):
+        self.var_status.set("Bereit.")
+
+    # --- Block-Separator einfügen ---
+    def _block_hinzufuegen(self):
+        if self._placeholder_active:
+            self.txt_input.delete("1.0", "end")
+            self.txt_input.config(fg="black")
+            self._placeholder_active = False
+        self.txt_input.insert("end", "\n\n")
+        self.txt_input.focus_set()
+        self._aktualisiere_zaehler()
 
     # --- Ordner wählen ---
     def _waehle_ordner(self):
@@ -125,61 +210,76 @@ class QRApp(tk.Tk):
         if ordner:
             self.var_pfad.set(ordner)
 
-    # --- Zeilen lesen & validieren ---
-    def _zeilen(self) -> list[str]:
+    # --- Einträge ermitteln ---
+    def _eintraege_text(self, warn=True) -> list[str]:
+        if self._placeholder_active:
+            if warn:
+                messagebox.showwarning("Keine Eingabe", "Bitte Text oder URL eingeben.")
+            return []
         raw = self.txt_input.get("1.0", "end").strip()
         if not raw:
-            messagebox.showwarning("Keine Eingabe", "Bitte mindestens eine Zeile eingeben.")
+            if warn:
+                messagebox.showwarning("Keine Eingabe", "Bitte Text oder URL eingeben.")
             return []
-        return [z.strip() for z in raw.splitlines() if z.strip()]
+        normalisiert = raw.replace("\r\n", "\n").replace("\r", "\n")
+        return [b.strip() for b in re.split(r"\n\s*\n", normalisiert) if b.strip()]
 
-    # --- Speichern ---
-    def _alle_speichern(self):
-        zeilen = self._zeilen()
-        if not zeilen:
+    def _eintraege_vcard(self, warn=True) -> list[str]:
+        vname = self.var_vname.get().strip()
+        nname = self.var_nname.get().strip()
+        fn = f"{vname} {nname}".strip()
+        if not fn:
+            if warn:
+                messagebox.showwarning("Keine Eingabe", "Bitte mindestens Vor- oder Nachname eingeben.")
+            return []
+        zeilen = ["BEGIN:VCARD", "VERSION:3.0", f"N:{nname};{vname};;;", f"FN:{fn}"]
+        if self.var_org.get().strip():
+            zeilen.append(f"ORG:{self.var_org.get().strip()}")
+        if self.var_titel.get().strip():
+            zeilen.append(f"TITLE:{self.var_titel.get().strip()}")
+        if self.var_tel.get().strip():
+            zeilen.append(f"TEL;TYPE=CELL:{self.var_tel.get().strip()}")
+        if self.var_email.get().strip():
+            zeilen.append(f"EMAIL:{self.var_email.get().strip()}")
+        if self.var_url.get().strip():
+            url = self.var_url.get().strip()
+            if not re.match(r"https?://", url, re.I):
+                url = "https://" + url
+            zeilen.append(f"URL:{url}")
+        zeilen.append("END:VCARD")
+        return ["\n".join(zeilen)]
+
+    def _eintraege(self, warn=True) -> list[str]:
+        if self._nb.index("current") == 0:
+            return self._eintraege_text(warn=warn)
+        return self._eintraege_vcard(warn=warn)
+
+    # --- Aktionen ---
+    def _vorschau(self):
+        eintraege = self._eintraege()
+        if not eintraege:
+            return
+        for text in eintraege:
+            zeige_vorschau(self, text, erzeuge_qr(text))
+        n = len(eintraege)
+        self.var_status.set(f"{n} Vorschau-Fenster geöffnet.")
+
+    def _speichern(self):
+        eintraege = self._eintraege()
+        if not eintraege:
             return
         ordner = Path(self.var_pfad.get())
         if not ordner.is_dir():
             messagebox.showerror("Fehler", f"Ordner existiert nicht:\n{ordner}")
             return
-
         gespeichert = []
-        for text in zeilen:
+        for text in eintraege:
             img = erzeuge_qr(text)
             datei = ordner / f"qr_{sicherer_dateiname(text)}.png"
             img.save(datei)
             gespeichert.append(datei.name)
-
         self.var_status.set(f"{len(gespeichert)} QR-Code(s) gespeichert in {ordner}")
-        messagebox.showinfo("Fertig", f"{len(gespeichert)} QR-Code(s) gespeichert:\n\n" + "\n".join(gespeichert))
-
-    # --- Vorschau ---
-    def _alle_vorschau(self):
-        zeilen = self._zeilen()
-        if not zeilen:
-            return
-        for text in zeilen:
-            img = erzeuge_qr(text)
-            zeige_vorschau(self, text, img)
-        self.var_status.set(f"{len(zeilen)} Vorschau-Fenster geöffnet.")
-
-    # --- Beides ---
-    def _speichern_und_vorschau(self):
-        zeilen = self._zeilen()
-        if not zeilen:
-            return
-        ordner = Path(self.var_pfad.get())
-        if not ordner.is_dir():
-            messagebox.showerror("Fehler", f"Ordner existiert nicht:\n{ordner}")
-            return
-
-        for text in zeilen:
-            img = erzeuge_qr(text)
-            datei = ordner / f"qr_{sicherer_dateiname(text)}.png"
-            img.save(datei)
-            zeige_vorschau(self, text, img)
-
-        self.var_status.set(f"{len(zeilen)} QR-Code(s) gespeichert & Vorschau geöffnet.")
+        messagebox.showinfo("Gespeichert", f"{len(gespeichert)} QR-Code(s) gespeichert:\n\n" + "\n".join(gespeichert))
 
 
 if __name__ == "__main__":
