@@ -74,6 +74,23 @@ def sicherer_dateiname(text: str) -> str:
     return name[:80] or "qr"
 
 
+def vcard_anzeige_name(vcard_text: str) -> str:
+    for zeile in vcard_text.splitlines():
+        if zeile.upper().startswith("FN:"):
+            return zeile[3:].strip() or "vcard"
+    return "vcard"
+
+
+def eindeutiger_pfad(ordner: Path, basisname: str, suffix: str = ".png") -> Path:
+    basis = sicherer_dateiname(basisname)
+    kandidat = ordner / f"{basis}{suffix}"
+    zaehler = 2
+    while kandidat.exists():
+        kandidat = ordner / f"{basis}_{zaehler}{suffix}"
+        zaehler += 1
+    return kandidat
+
+
 # ---------------------------------------------------------------------------
 # Vorschau-Popup für ein einzelnes Bild
 # ---------------------------------------------------------------------------
@@ -313,6 +330,7 @@ class QRApp(tk.Tk):
         eintraege = self._eintraege()
         if not eintraege:
             return
+        ist_vcard_tab = self._nb.index("current") == 1
         ordner = Path(self.var_pfad.get())
         if not ordner.is_dir():
             messagebox.showerror("Fehler", f"Ordner existiert nicht:\n{ordner}")
@@ -320,7 +338,12 @@ class QRApp(tk.Tk):
         gespeichert = []
         for text in eintraege:
             img = erzeuge_qr(text)
-            datei = ordner / f"qr_{sicherer_dateiname(text)}.png"
+            if ist_vcard_tab:
+                kontaktname = vcard_anzeige_name(text)
+                basisname = f"qr_vcard_{kontaktname}"
+            else:
+                basisname = f"qr_{text}"
+            datei = eindeutiger_pfad(ordner, basisname)
             img.save(datei)
             gespeichert.append(datei.name)
         self.var_status.set(f"{len(gespeichert)} QR-Code(s) gespeichert in {ordner}")
