@@ -22,16 +22,37 @@ from PIL import Image, ImageDraw, ImageFont, ImageTk
 # ---------------------------------------------------------------------------
 # QR-Code erzeugen mit Eingabetext als Footer (gibt PIL-Image zurück)
 # ---------------------------------------------------------------------------
-def erzeuge_qr(text: str) -> Image.Image:
+def erzeuge_qr(text: str, logo_pfad: str | None = None) -> Image.Image:
+    error_correction = (
+        qrcode.constants.ERROR_CORRECT_H if logo_pfad
+        else qrcode.constants.ERROR_CORRECT_M
+    )
     qr = qrcode.QRCode(
         version=None,
-        error_correction=qrcode.constants.ERROR_CORRECT_M,
+        error_correction=error_correction,
         box_size=10,
         border=4,
     )
     qr.add_data(text)
     qr.make(fit=True)
     qr_img = qr.make_image(fill_color="black", back_color="white").convert("RGB")
+
+    # Logo mittig einbetten
+    if logo_pfad:
+        try:
+            logo = Image.open(logo_pfad).convert("RGBA")
+            logo_max = qr_img.width // 4
+            logo.thumbnail((logo_max, logo_max), Image.LANCZOS)
+            pad = 6
+            logo_bg = Image.new("RGB", (logo.width + pad * 2, logo.height + pad * 2), "white")
+            logo_bg.paste(logo, (pad, pad), logo)
+            pos = (
+                (qr_img.width  - logo_bg.width)  // 2,
+                (qr_img.height - logo_bg.height) // 2,
+            )
+            qr_img.paste(logo_bg, pos)
+        except Exception:
+            pass  # Logo-Fehler still ignorieren
 
     # Footer-Text unterhalb des QR-Codes zeichnen (bei Mehrzeilen nur kurze Vorschau)
     footer_text = text.replace("\r\n", "\n").replace("\r", "\n").strip()
@@ -175,6 +196,15 @@ class QRApp(tk.Tk):
         ttk.Entry(frm_path, textvariable=self.var_pfad).pack(side="left", fill="x", expand=True, padx=(5, 5))
         ttk.Button(frm_path, text="…", width=3, command=self._waehle_ordner).pack(side="left")
 
+        # Logo (optional)
+        frm_logo = ttk.Frame(self)
+        frm_logo.pack(fill="x", padx=10, pady=(4, 0))
+        ttk.Label(frm_logo, text="Logo (opt.): ").pack(side="left")
+        self.var_logo = tk.StringVar()
+        ttk.Entry(frm_logo, textvariable=self.var_logo, state="readonly").pack(side="left", fill="x", expand=True, padx=(5, 5))
+        ttk.Button(frm_logo, text="…", width=3, command=self._waehle_logo).pack(side="left")
+        ttk.Button(frm_logo, text="✕", width=3, command=lambda: self.var_logo.set("")).pack(side="left", padx=(2, 0))
+
         # Aktionen
         frm_actions = ttk.Frame(self)
         frm_actions.pack(fill="x", padx=10, pady=(6, 0))
@@ -218,6 +248,7 @@ class QRApp(tk.Tk):
             ("Firma",    "var_org"),
             ("Funktion", "var_titel"),
             ("Telefon",  "var_tel"),
+            ("Handy",    "var_mobil"),
             ("E-Mail",   "var_email"),
             ("Website",  "var_url"),
         ]
@@ -272,6 +303,14 @@ class QRApp(tk.Tk):
         if ordner:
             self.var_pfad.set(ordner)
 
+    # --- Logo wählen ---
+    def _waehle_logo(self):
+        datei = filedialog.askopenfilename(
+            filetypes=[("Bilder", "*.png *.jpg *.jpeg *.gif *.bmp *.webp"), ("Alle", "*.*")]
+        )
+        if datei:
+            self.var_logo.set(datei)
+
     # --- Einträge ermitteln ---
     def _eintraege_text(self, warn=True) -> list[str]:
         if self._placeholder_active:
@@ -300,7 +339,9 @@ class QRApp(tk.Tk):
         if self.var_titel.get().strip():
             zeilen.append(f"TITLE:{self.var_titel.get().strip()}")
         if self.var_tel.get().strip():
-            zeilen.append(f"TEL;TYPE=CELL:{self.var_tel.get().strip()}")
+            zeilen.append(f"TEL;TYPE=WORK,VOICE:{self.var_tel.get().strip()}")
+        if self.var_mobil.get().strip():
+            zeilen.append(f"TEL;TYPE=CELL:{self.var_mobil.get().strip()}")
         if self.var_email.get().strip():
             zeilen.append(f"EMAIL:{self.var_email.get().strip()}")
         if self.var_url.get().strip():
@@ -321,8 +362,9 @@ class QRApp(tk.Tk):
         eintraege = self._eintraege()
         if not eintraege:
             return
+        logo = self.var_logo.get().strip() or None
         for text in eintraege:
-            zeige_vorschau(self, text, erzeuge_qr(text))
+            zeige_vorschau(self, text, erzeuge_qr(text, logo_pfad=logo))
         n = len(eintraege)
         self.var_status.set(f"{n} Vorschau-Fenster geöffnet.")
 
@@ -335,9 +377,10 @@ class QRApp(tk.Tk):
         if not ordner.is_dir():
             messagebox.showerror("Fehler", f"Ordner existiert nicht:\n{ordner}")
             return
+        logo = self.var_logo.get().strip() or None
         gespeichert = []
         for text in eintraege:
-            img = erzeuge_qr(text)
+            img = erzeuge_qr(text, logo_pfad=logo)
             if ist_vcard_tab:
                 kontaktname = vcard_anzeige_name(text)
                 basisname = f"qr_vcard_{kontaktname}"
